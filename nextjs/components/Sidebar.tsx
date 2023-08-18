@@ -52,13 +52,13 @@ const Sidebar = ({ form }: { form: Form }) => {
                   {...field}
                   labelTransition="skew-down"
                   marks={[
+                    { value: 256, label: "256" },
                     { value: 500, label: "500" },
                     { value: 1000, label: "1000" },
                     { value: 1500, label: "1500" },
-                    { value: 2000, label: "2000" },
                   ]}
-                  max={2000}
-                  min={500}
+                  max={1500}
+                  min={256}
                   step={100}
                 />
               )}
@@ -122,6 +122,10 @@ const Sidebar = ({ form }: { form: Form }) => {
                       label: "RecursiveTextSplitter",
                       value: "RecursiveTextSplitter",
                     },
+                    {
+                      label: "SpacyTextSplitter",
+                      value: "SpacyTextSplitter",
+                    }, 
                   ]}
                 />
               )}

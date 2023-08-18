@@ -1,7 +1,8 @@
+# coding=utf-8
 """
 This is an API to support the LLM QA chain auto-evaluator. 
 """
-
+import uvicorn
 import io
 import os
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ import random
 import logging
 import itertools
 import faiss
+import aiofiles
 import pandas as pd
 from typing import Dict, List
 from json import JSONDecodeError
@@ -34,7 +36,8 @@ from langchain.embeddings import MosaicMLInstructorEmbeddings
 from fastapi import FastAPI, File, UploadFile, Form
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.chains.question_answering import load_qa_chain
-from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter, SpacyTextSplitter
+from langchain.document_loaders import TextLoader
 from text_utils import GRADE_DOCS_PROMPT, GRADE_ANSWER_PROMPT, GRADE_DOCS_PROMPT_FAST, GRADE_ANSWER_PROMPT_FAST, GRADE_ANSWER_PROMPT_BIAS_CHECK, GRADE_ANSWER_PROMPT_OPENAI, QA_CHAIN_PROMPT, QA_CHAIN_PROMPT_LLAMA
 
 def generate_eval(text, chunk, logger):
@@ -88,6 +91,11 @@ def split_texts(text, chunk_size, overlap, split_method, logger):
         text_splitter = CharacterTextSplitter(separator=" ",
                                               chunk_size=chunk_size,
                                               chunk_overlap=overlap)
+    elif split_method == "SpacyTextSplitter":
+        text_splitter = SpacyTextSplitter(chunk_size=chunk_size,  
+                                          chunk_overlap=overlap, 
+                                          pipeline="zh_core_web_sm")
+
     splits = text_splitter.split_text(text)
     return splits
 
@@ -111,6 +119,47 @@ def make_llm(model):
     elif model == "mosaic":
         llm = MosaicML(inject_instruction_format=True,model_kwargs={'do_sample': False, 'max_length': 3000})
     return llm
+
+def split_make_retriever(text,  chunk_size, overlap, split_method, retriever_type, embeddings, num_neighbors, llm, logger, cache_store_name = None):
+    # Set embeddings
+    if embeddings == "OpenAI":
+        embd = OpenAIEmbeddings()
+    # Note: Still WIP (can't be selected by user yet)
+    elif embeddings == "LlamaCppEmbeddings":
+        embd = LlamaCppEmbeddings(model="replicate/vicuna-13b:e6d469c2b11008bb0e446c3e9629232f9674581224536851272c54871f84076e")
+    # Note: Test
+    elif embeddings == "Mosaic":
+        embd = MosaicMLInstructorEmbeddings(query_instruction="Represent the query for retrieval: ")
+
+    if cache_store_name and retriever_type == "similarity-search":
+        try:
+            vectorstore = FAISS.load_local(cache_store_name, embd)
+            retriever = vectorstore.as_retriever(k=num_neighbors)
+        except Exception as e:
+            if retriever_type == "Anthropic-100k":
+                splits = ""
+                model_version = "Anthropic-100k"
+            else:
+                logger.info("Splitting texts")
+                splits = split_texts(text, chunk_size, overlap, split_method, logger)
+                vectorstore = FAISS.from_texts(splits, embd)
+                retriever = vectorstore.as_retriever(k=num_neighbors)
+                vectorstore.save_local(cache_store_name)        
+    else:
+        splits = split_texts(text, chunk_size, overlap, split_method, logger)
+        # Select retriever
+        if retriever_type == "similarity-search":
+            vectorstore = FAISS.from_texts(splits, embd)
+            retriever = vectorstore.as_retriever(k=num_neighbors)
+        elif retriever_type == "SVM":
+            retriever = SVMRetriever.from_texts(splits, embd)
+        elif retriever_type == "TF-IDF":
+            retriever = TFIDFRetriever.from_texts(splits)
+        elif retriever_type == "Anthropic-100k":
+            retriever = llm
+
+    return retriever
+
 
 def make_retriever(splits, retriever_type, embeddings, num_neighbors, llm, logger):
     """
@@ -145,7 +194,7 @@ def make_retriever(splits, retriever_type, embeddings, num_neighbors, llm, logge
         retriever = TFIDFRetriever.from_texts(splits)
     elif retriever_type == "Anthropic-100k":
          retriever = llm
-    return retriever
+    return retriever, vectorstore
 
 def make_chain(llm, retriever, retriever_type, model):
 
@@ -175,7 +224,6 @@ def make_chain(llm, retriever, retriever_type, model):
                                                chain_type_kwargs=chain_type_kwargs,
                                                input_key="question")
     return qa_chain
-
 
 def grade_model_answer(predicted_dataset, predictions, grade_answer_prompt, logger):
     """
@@ -289,7 +337,7 @@ def run_eval(chain, retriever, eval_qa_pair, grade_prompt, retriever_type, num_n
         gt_dataset, predictions, grade_prompt, logger)
     graded_retrieval = grade_model_retrieval(
         gt_dataset, retrieved_docs, grade_prompt, logger)
-    return graded_answers, graded_retrieval, latency, predictions
+    return graded_answers, graded_retrieval, latency, predictions, retrieved_doc_text
 
 load_dotenv()
 
@@ -304,16 +352,20 @@ app = FastAPI()
 origins = [
     "http://localhost:3000",
     "localhost:3000",
-    "https://evaluator-ui.vercel.app/"
-    "https://evaluator-ui.vercel.app"
-    "evaluator-ui.vercel.app/"
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1",
+    "127.0.0.1",
+    "127.0.0.1:3000"
+    "https://evaluator-ui.vercel.app/",
+    "https://evaluator-ui.vercel.app",
+    "evaluator-ui.vercel.app/",
     "evaluator-ui.vercel.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -323,8 +375,18 @@ app.add_middleware(
 async def root():
     return {"message": "Welcome to the Auto Evaluator!"}
 
-
-def run_evaluator(
+def generate_store_name(path, filename,
+    chunk_chars,
+    overlap,
+    split_method,
+    retriever_type,
+    embeddings   
+):
+    fullFileName = f"{filename}_{chunk_chars}_{overlap}_{split_method}_{retriever_type}_{embeddings}"
+    storename = os.path.join(path, fullFileName)
+    return storename
+    
+async def run_evaluator(
     files,
     num_eval_questions,
     chunk_chars,
@@ -339,47 +401,78 @@ def run_evaluator(
 ):
 
     # Set up logging
-    logging.config.fileConfig('logging.conf', disable_existing_loggers=False)
+    basePath = os.path.dirname(os.path.abspath(__file__))
+    log_file_path = os.path.join(basePath, 'logging.conf')
+    logging.config.fileConfig(log_file_path, disable_existing_loggers=False)
     logger = logging.getLogger(__name__)
 
+    uploadPath =  basePath + "/uploads"
+    # Create new folder if not exist
+    if not os.path.exists(uploadPath):
+        os.makedirs(uploadPath)
+
     # Read content of files
+    text = ""
     texts = []
     fnames = []
-    for file in files:
-        logger.info("Reading file: {}".format(file.filename))
-        contents = file.file.read()
-        # PDF file
-        if file.content_type == 'application/pdf':
-            logger.info("File {} is a PDF".format(file.filename))
-            pdf_reader = pypdf.PdfReader(io.BytesIO(contents))
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text()
-            texts.append(text)
-            fnames.append(file.filename)
-        # Text file
-        elif file.content_type == 'text/plain':
-            logger.info("File {} is a TXT".format(file.filename))
-            texts.append(contents.decode())
-            fnames.append(file.filename)
-        else:
-            logger.warning(
-                "Unsupported file type for file: {}".format(file.filename))
-    text = " ".join(texts)
+    filename = os.path.join(uploadPath, files[0].filename)
+    cache_storename = generate_store_name(os.path.join(basePath, "store"), files[0].filename, 
+                                    chunk_chars, overlap, split_method, retriever_type, embeddings)
 
-    if retriever_type == "Anthropic-100k":
-        splits = ""
-        model_version = "Anthropic-100k"
-    else:
-        logger.info("Splitting texts")
-        splits = split_texts(text, chunk_chars, overlap, split_method, logger)
+    # if first filename already exists in directory, skip all files
+    if not os.path.exists(filename):
+        for file in files:
+            logger.info("Reading file: {}".format(file.filename))
+            contents = file.file.read()
+            # PDF file
+            if file.content_type == 'application/pdf':
+                logger.info("File {} is a PDF".format(file.filename))
+                pdf_reader = pypdf.PdfReader(io.BytesIO(contents))
+                text = ""
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+                texts.append(text)
+                fnames.append(file.filename)
+            # Text file
+            elif file.content_type == 'text/plain':
+                logger.info("File {} is a TXT".format(file.filename))
+                texts.append(contents.decode("utf-8"))
+                fnames.append(file.filename)
+            else:
+                logger.warning(
+                    "Unsupported file type for file: {}".format(file.filename))
+        
+        text = " ".join(texts)
+        # save file
+        async with aiofiles.open(filename, 'w', encoding="utf8") as f:
+            await f.write(text)        
 
     logger.info("Make LLM")
     llm = make_llm(model_version)
 
+    async with aiofiles.open(filename, 'r', encoding="utf8") as f:
+        text = await f.read()
+
     logger.info("Make retriever")
-    retriever = make_retriever(
-        splits, retriever_type, embeddings, num_neighbors, llm, logger)
+    retriever = split_make_retriever(text, chunk_chars, overlap, split_method,retriever_type, embeddings, num_neighbors, llm, logger, cache_storename)
+
+    # splits = split_texts(text, chunk_chars, overlap, split_method, logger)
+    # retriever, vStore = make_retriever(
+    #     splits, retriever_type, embeddings, num_neighbors, llm, logger)
+        
+    # try:
+    #     vectorstore = FAISS.load_local(f"./store/{files[0].filename}", embd)
+    #     retriever = vectorstore.as_retriever(k=num_neighbors)
+    # except Exception as e:
+    #     if retriever_type == "Anthropic-100k":
+    #         splits = ""
+    #         model_version = "Anthropic-100k"
+    #     else:
+    #         logger.info("Splitting texts")
+    #         splits = split_texts(text, chunk_chars, overlap, split_method, logger)
+    #         retriever, vStore = make_retriever(
+    #             splits, retriever_type, embeddings, num_neighbors, llm, logger)
+    #         vStore.save_local(f"./store/{files[0].filename}")
 
     logger.info("Make chain")
     qa_chain = make_chain(llm, retriever, retriever_type, model_version)
@@ -399,14 +492,15 @@ def run_evaluator(
                 eval_pair = eval_pair[0]
 
         # Run eval
-        graded_answers, graded_retrieval, latency, predictions = run_eval(
+        graded_answers, graded_retrieval, latency, predictions, retrieved_doc_text = run_eval(
             qa_chain, retriever, eval_pair, grade_prompt, retriever_type, num_neighbors, text, logger)
 
         # Assemble output
         d = pd.DataFrame(predictions)
-        d['answerScore'] = [g['text'] for g in graded_answers]
-        d['retrievalScore'] = [g['text'] for g in graded_retrieval]
+        d['answerScore'] = [g['results'] for g in graded_answers]
+        d['retrievalScore'] = [g['results'] for g in graded_retrieval]
         d['latency'] = latency
+        d["Retrieved"] = retrieved_doc_text
 
         # Summary statistics
         d['answerScore'] = [{'score': 1 if "Incorrect" not in text else 0,
@@ -421,6 +515,8 @@ def run_evaluator(
         else:
             logger.warn(
                 "A QA pair was not evaluated correctly. Skipping this pair.")
+            
+        logger.info("Eval Finished!")
 
 
 @app.post("/evaluator-stream")
@@ -440,3 +536,6 @@ async def create_response(
     test_dataset = json.loads(test_dataset)
     return EventSourceResponse(run_evaluator(files, num_eval_questions, chunk_chars,
                                              overlap, split_method, retriever_type, embeddings, model_version, grade_prompt, num_neighbors, test_dataset), headers={"Content-Type": "text/event-stream", "Connection": "keep-alive", "Cache-Control": "no-cache"})
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)

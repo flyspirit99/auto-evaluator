@@ -1,2 +1,6 @@
 .DS_Store
 .vercel
+docs/
+uploads/
+store/
+__pycache__/

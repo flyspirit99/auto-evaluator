@@ -10,9 +10,9 @@ const PlaygroundPage = () => {
   const form = useForm<FormValues>({
     defaultValues: {
       evalQuestionsCount: 1,
-      chunkSize: 1000,
-      overlap: 100,
-      splitMethod: "RecursiveTextSplitter",
+      chunkSize: 256,
+      overlap: 20,
+      splitMethod: "SpacyTextSplitter",
       embeddingAlgorithm: "OpenAI",
       model: "gpt-3.5-turbo",
       retriever: "similarity-search",
