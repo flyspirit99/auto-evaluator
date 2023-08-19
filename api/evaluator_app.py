@@ -2,7 +2,6 @@
 """
 This is an API to support the LLM QA chain auto-evaluator. 
 """
-import uvicorn
 import io
 import os
 from dotenv import load_dotenv
@@ -500,7 +499,7 @@ async def run_evaluator(
         d['answerScore'] = [g['results'] for g in graded_answers]
         d['retrievalScore'] = [g['results'] for g in graded_retrieval]
         d['latency'] = latency
-        d["Retrieved"] = retrieved_doc_text
+        d["retrieved"] = retrieved_doc_text
 
         # Summary statistics
         d['answerScore'] = [{'score': 1 if "Incorrect" not in text else 0,
@@ -537,5 +536,5 @@ async def create_response(
     return EventSourceResponse(run_evaluator(files, num_eval_questions, chunk_chars,
                                              overlap, split_method, retriever_type, embeddings, model_version, grade_prompt, num_neighbors, test_dataset), headers={"Content-Type": "text/event-stream", "Connection": "keep-alive", "Cache-Control": "no-cache"})
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="127.0.0.1", port=9000)

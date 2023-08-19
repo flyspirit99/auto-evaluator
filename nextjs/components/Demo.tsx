@@ -160,7 +160,7 @@ const Demo = ({ form }: { form: Form }) => {
     let rowCount = 0;
 
     try {
-      await fetchEventSource("http://127.0.0.1:8000" + "/evaluator-stream", {
+      await fetchEventSource("http://127.0.0.1:9000" + "/evaluator-stream", {
         method: "POST",
         body: formData,
         headers: {

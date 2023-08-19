@@ -188,7 +188,7 @@ const Playground = ({ form }: { form: Form }) => {
     let localResults = [];
     let rowCount = 0;
     try {
-      await fetchEventSource("http://127.0.0.1:8000" + "/evaluator-stream", {
+      await fetchEventSource("http://127.0.0.1:9000" + "/evaluator-stream", {
         method: "POST",
         body: formData,
         headers: {
@@ -687,7 +687,7 @@ const Playground = ({ form }: { form: Form }) => {
                       <td>{result?.question}</td>
                       <td>{result?.answer}</td>
                       <td>{result?.result}</td>
-                      <td>{result?.Retrieved}</td>
+                      <td>{result?.retrieved}</td>
                       <td style={{ whiteSpace: "pre-wrap" }}>
                         {isFastGradingPrompt ? (
                           renderPassFail(result.retrievalScore)

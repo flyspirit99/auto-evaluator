@@ -19,6 +19,7 @@ export type Result = {
   question: string;
   answer: string;
   result: string;
+  retrieved: string;
   retrievalScore: { score: number; justification: string };
   answerScore: { score: number; justification: string };
   latency: number;

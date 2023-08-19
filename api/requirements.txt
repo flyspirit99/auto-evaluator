@@ -1,9 +1,9 @@
-pandas>=2.0.3
-fastapi[all]>=0.98.0,<1.0.0
-langchain >= 0.0.245, <0.0.246
-python-multipart>=0.0.6
+pandas==2.0.3
+fastapi[all]==0.101.0
+langchain == 0.0.262
+python-multipart==0.0.6
 uvicorn==0.18.3
-openai>=0.27.0
+openai==0.27.0
 tiktoken>=0.4.0
 faiss-cpu >= 1.7.4
 huggingface-hub>=0.12.0
@@ -13,10 +13,11 @@ filetype>=1.2.0
 tokenizers>=0.13.3
 sentence-transformers==2.2.2
 scikit-learn==1.2.1
-llama-index==0.4.35.post1
+llama-index==0.8.4
 sse_starlette==1.3.3
 gpt-index==0.5.16
 python-dotenv==1.0.0
 sentry_sdk==1.21.1
-llama-cpp-python==0.1.43
 replicate==0.8.3
+aiofiles>=23.2.1
+spacy==3.6.1
